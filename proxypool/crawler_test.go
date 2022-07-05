@@ -1,6 +1,7 @@
 package proxypool_test
 
 import (
+	"fmt"
 	"gospider/proxypool"
 	"strings"
 	"testing"
@@ -9,12 +10,12 @@ import (
 func TestCrawler(t *testing.T) {
 
 	for _, crawler := range proxypool.DefaultCrawlers {
-		//fmt.Printf("no:\tproxy %d\n", crawler)
+		fmt.Printf("no:\tproxy %d\n", crawler)
 
 		n := 1
 		for proxy := range crawler.Crawl() {
 
-			//fmt.Printf("\t%d:\t%s\n", n, proxy)
+			fmt.Printf("\t%d:\t%s\n", n, proxy)
 
 			s := strings.Split(proxy, ":")
 			if !(len(s) == 2 || len(s) == 3) {

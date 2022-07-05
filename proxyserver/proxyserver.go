@@ -18,6 +18,7 @@ func main() {
 		proxypool.NewihuanCrawler(2*60*60, 10, 2000),
 		proxypool.NewyqieCrawler(),
 		proxypool.NewkxCrawler(60*60, 5),
+		proxypool.NewzdyCrawler(60*60, 5),
 	}
 
 	scheduler := &proxypool.Scheduler{

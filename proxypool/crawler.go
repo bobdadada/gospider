@@ -42,6 +42,7 @@ func init() {
 		Newip3366Crawler(60*60, 5),
 		NewihuanCrawler(60*60, 5, 2000),
 		NewkxCrawler(60*60, 5),
+		NewzdyCrawler(60*60, 5),
 	)
 
 	for _, c := range DefaultStoppableCrawlers {
@@ -57,7 +58,6 @@ type inBaseCrawler struct {
 
 	parse func() // 解析网页
 
-	tick   <-chan time.Time
 	wg     sync.WaitGroup
 	str    chan string
 	abort  chan struct{}
@@ -67,11 +67,6 @@ type inBaseCrawler struct {
 }
 
 func (base *inBaseCrawler) crawl() {
-	if base.timeout > 0 {
-		ticker := time.NewTicker(base.timeout)
-		defer ticker.Stop()
-		base.tick = ticker.C
-	}
 
 	base.wg.Add(1)
 	go func() {
@@ -104,6 +99,13 @@ func (base *inBaseCrawler) Crawl() <-chan string {
 
 	base.str = make(chan string, 5)
 	base.abort = make(chan struct{})
+
+	if base.timeout > 0 {
+		go func() {
+			<-time.After(base.timeout)
+			base.Stop()
+		}()
+	}
 
 	base.crawl()
 
@@ -148,10 +150,8 @@ func NewkdlCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 		pageloop:
 			for {
 				select {
-				case <-kdl.tick:
-					break mainloop
 				case <-kdl.abort:
-					break mainloop
+					return
 				default:
 					url := u + strconv.Itoa(page) + "/"
 
@@ -164,7 +164,7 @@ func NewkdlCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 						case <-time.After(1 * time.Second):
 							continue pageloop
 						case <-kdl.abort:
-							break mainloop
+							return
 						}
 					}
 
@@ -179,11 +179,11 @@ func NewkdlCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 
 						select {
 						case <-kdl.abort:
-							break mainloop
+							return
 						case kdl.str <- addr:
 							num++
 							if kdl.maxnum > 0 && num >= kdl.maxnum {
-								break mainloop
+								return
 							}
 						}
 					}
@@ -221,10 +221,8 @@ func Newip89Crawler(timeout, interval int) *inBaseCrawler {
 	loop:
 		for {
 			select {
-			case <-ip89.tick:
-				break loop
 			case <-ip89.abort:
-				break loop
+				return
 			default:
 
 				url := startURL + "index_" + strconv.Itoa(page) + ".html"
@@ -235,18 +233,18 @@ func Newip89Crawler(timeout, interval int) *inBaseCrawler {
 					case <-time.After(1 * time.Second):
 						continue loop
 					case <-ip89.abort:
-						break loop
+						return
 					}
 				}
 
 				doc := soup.HTMLParse(html)
 				tbody := doc.FindStrict("table", "class", "layui-table").Find("tbody")
 				if tbody.Error != nil {
-					break loop
+					return
 				}
 				trs := tbody.FindAll("tr")
 				if len(trs) == 0 {
-					break loop
+					return
 				}
 
 				for _, tr := range trs {
@@ -259,7 +257,7 @@ func Newip89Crawler(timeout, interval int) *inBaseCrawler {
 						port := strings.TrimSpace(tds[1].Text())
 						select {
 						case <-ip89.abort:
-							break loop
+							return
 						case ip89.str <- fmt.Sprintf("%s:%s", ip, port):
 						}
 					}
@@ -267,7 +265,7 @@ func Newip89Crawler(timeout, interval int) *inBaseCrawler {
 
 				select {
 				case <-ip89.abort:
-					break loop
+					return
 				case <-time.After(ip89.interval + time.Second*time.Duration(rand.Intn(5))):
 					page++
 				}
@@ -340,15 +338,13 @@ func Newip3366Crawler(timeout, interval int) *inBaseCrawler {
 		const (
 			startURL = "http://www.ip3366.net/?stype=1"
 		)
-		page := 1
 
+		page := 1
 	loop:
 		for page <= 10 {
 			select {
-			case <-ip3366.tick:
-				break loop
 			case <-ip3366.abort:
-				break loop
+				return
 			default:
 				url := startURL + "&page=" + strconv.Itoa(page)
 
@@ -358,18 +354,18 @@ func Newip3366Crawler(timeout, interval int) *inBaseCrawler {
 					case <-time.After(1 * time.Second):
 						continue loop
 					case <-ip3366.abort:
-						break loop
+						return
 					}
 				}
 
 				doc := soup.HTMLParse(html)
 				tbody := doc.FindStrict("table", "class", "table table-bordered table-striped").Find("tbody")
 				if tbody.Error != nil {
-					break loop
+					return
 				}
 				trs := tbody.FindAll("tr")
 				if len(trs) == 0 {
-					break loop
+					return
 				}
 
 				for _, tr := range trs {
@@ -383,7 +379,7 @@ func Newip3366Crawler(timeout, interval int) *inBaseCrawler {
 						typ := strings.ToLower(strings.TrimSpace(tds[3].Text()))
 						select {
 						case <-ip3366.abort:
-							break loop
+							return
 						case ip3366.str <- fmt.Sprintf("%s://%s:%s", typ, ip, port):
 						}
 					}
@@ -391,7 +387,7 @@ func Newip3366Crawler(timeout, interval int) *inBaseCrawler {
 
 				select {
 				case <-ip3366.abort:
-					break loop
+					return
 				case <-time.After(ip3366.interval + time.Second*time.Duration(rand.Intn(5))):
 					page++
 				}
@@ -416,6 +412,7 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 		const (
 			startURL = "https://ip.ihuan.me/"
 		)
+
 		pagemap := map[string]string{}
 
 		page := 1 // web page
@@ -425,10 +422,8 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 	loop:
 		for {
 			select {
-			case <-ihuan.tick:
-				break loop
 			case <-ihuan.abort:
-				break loop
+				return
 			default:
 
 				html, err := soup.Get(url)
@@ -437,18 +432,18 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 					case <-time.After(1 * time.Second):
 						continue loop
 					case <-ihuan.abort:
-						break loop
+						return
 					}
 				}
 
 				doc := soup.HTMLParse(html)
 				tbody := doc.FindStrict("table", "class", "table table-hover table-bordered").Find("tbody")
 				if tbody.Error != nil {
-					break loop
+					return
 				}
 				trs := tbody.FindAll("tr")
 				if len(trs) == 0 {
-					break loop
+					return
 				}
 
 				for _, tr := range trs {
@@ -467,11 +462,11 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 						}
 						select {
 						case <-ihuan.abort:
-							break loop
+							return
 						case ihuan.str <- fmt.Sprintf("%s%s:%s", typ, ip, port):
 							num++
 							if ihuan.maxnum > 0 && num >= ihuan.maxnum {
-								break loop
+								return
 							}
 						}
 					}
@@ -479,11 +474,11 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 
 				pagination := doc.FindStrict("ul", "class", "pagination")
 				if pagination.Error != nil {
-					break loop
+					return
 				}
 				for i, li := range pagination.FindAll("li") {
 					if li.Error != nil {
-						break loop
+						return
 					}
 					if i == 0 {
 						continue
@@ -503,7 +498,7 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 
 				select {
 				case <-ihuan.abort:
-					break loop
+					return
 				case <-time.After(ihuan.interval + time.Second*time.Duration(rand.Intn(5))):
 					page++
 					url = startURL + pagemap[strconv.Itoa(page)]
@@ -529,17 +524,15 @@ func NewkxCrawler(timeout, interval int) *inBaseCrawler {
 			startURL = "http://www.kxdaili.com/dailiip"
 		)
 
-	loop:
 		for i := 1; i <= 2; i++ {
+
 			page := 1
 
 		pageloop:
 			for page <= 10 {
 				select {
-				case <-kx.tick:
-					break loop
 				case <-kx.abort:
-					break loop
+					return
 				default:
 					url := fmt.Sprintf("%s/%d/%d.html", startURL, i, page)
 
@@ -549,18 +542,18 @@ func NewkxCrawler(timeout, interval int) *inBaseCrawler {
 						case <-time.After(1 * time.Second):
 							continue pageloop
 						case <-kx.abort:
-							break loop
+							return
 						}
 					}
 
 					doc := soup.HTMLParse(html)
 					tbody := doc.FindStrict("table", "class", "active").Find("tbody")
 					if tbody.Error != nil {
-						break pageloop
+						return
 					}
 					trs := tbody.FindAll("tr")
 					if len(trs) == 0 {
-						break pageloop
+						return
 					}
 
 					for _, tr := range trs {
@@ -580,7 +573,7 @@ func NewkxCrawler(timeout, interval int) *inBaseCrawler {
 
 							select {
 							case <-kx.abort:
-								break loop
+								return
 							case kx.str <- fmt.Sprintf("%s%s:%s", typ, ip, port):
 							}
 						}
@@ -588,7 +581,7 @@ func NewkxCrawler(timeout, interval int) *inBaseCrawler {
 
 					select {
 					case <-kx.abort:
-						break loop
+						return
 					case <-time.After(kx.interval + time.Second*time.Duration(rand.Intn(5))):
 						page++
 					}
@@ -602,28 +595,96 @@ func NewkxCrawler(timeout, interval int) *inBaseCrawler {
 	return kx
 }
 
-// 尼玛公共代理
-func NewnmdlCrawler(timeout, interval, maxnum int) *inBaseCrawler {
-	nmdl := &inBaseCrawler{
+// 站大爷公共代理
+func NewzdyCrawler(timeout, interval int) *inBaseCrawler {
+	zdy := &inBaseCrawler{
 		timeout:  time.Duration(timeout) * time.Second,
 		interval: time.Duration(interval) * time.Second,
-		maxnum:   maxnum,
 	}
 
-	nmdl.parse = func() {
+	zdy.parse = func() {
 		const (
-			startURL = "http://www.nimadaili.com/gaoni/"
+			startURL = "https://www.zdaye.com"
 		)
+
+		var newdateindex string
+
+		now := time.Now()
+		url := fmt.Sprintf("%s/dayProxy/%d/%d/1.html", startURL, now.Year(), int(now.Month()))
+	ploop:
+		for {
+			html, err := soup.Get(url)
+			if err != nil {
+				select {
+				case <-zdy.abort:
+					return
+				case <-time.After(2 * time.Second):
+					continue ploop
+				}
+			}
+			doc := soup.HTMLParse(html)
+			a := doc.Find("h3", "class", "thread_title").Find("a")
+			if a.Error != nil {
+				return
+			}
+			href := a.Attrs()["href"]
+			if href == "" {
+				return
+			}
+			newdateindex = href[:len(href)-5]
+			break ploop
+		}
 
 		page := 1
 
-	mainloop:
+	pageloop:
 		for {
-
+			url := startURL + newdateindex + "/" + strconv.Itoa(page) + ".html"
+			html, err := soup.Get(url)
+			if err != nil {
+				select {
+				case <-zdy.abort:
+					return
+				case <-time.After(2 * time.Second):
+					continue pageloop
+				}
+			}
+			doc := soup.HTMLParse(html)
+			tbody := doc.FindStrict("table", "id", "ipc").Find("tbody")
+			if tbody.Error != nil {
+				return
+			}
+			trs := tbody.FindAll("tr")
+			if len(trs) == 0 {
+				return
+			}
+			for _, tr := range trs {
+				if tr.Error != nil {
+					continue
+				}
+				tds := tr.FindAll("td")
+				if len(tds) >= 5 {
+					ip := strings.TrimSpace(tds[0].Text())
+					port := strings.TrimSpace(tds[1].Text())
+					typ := strings.ToLower(strings.TrimSpace(tds[2].Text()))
+					select {
+					case <-zdy.abort:
+						return
+					case zdy.str <- fmt.Sprintf("%s://%s:%s", typ, ip, port):
+					}
+				}
+			}
+			select {
+			case <-zdy.abort:
+				return
+			case <-time.After(zdy.interval + time.Second*time.Duration(rand.Intn(5))):
+				page++
+			}
 		}
+
 	}
 
-	return nmdl
+	return zdy
 }
 
 /*
