@@ -58,19 +58,24 @@ type inBaseCrawler struct {
 
 	parse func() // 解析网页
 
-	wg     sync.WaitGroup
-	str    chan string
-	abort  chan struct{}
-	initf  bool       // 开始爬取的初始化标志
-	finalf bool       // 结束爬取的标志
-	mutf   sync.Mutex // 状态锁
+	cwg sync.WaitGroup // crawl等待
+	twg sync.WaitGroup // 定时器等待
+	swg sync.WaitGroup // stop等待
+
+	str   chan string
+	abort chan struct{}
+
+	initf  bool         // 开始爬取的初始化标志
+	finalf bool         // 结束爬取的标志
+	mutf   sync.RWMutex // 状态锁
+
 }
 
 func (base *inBaseCrawler) crawl() {
 
-	base.wg.Add(1)
+	base.cwg.Add(1)
 	go func() {
-		defer base.wg.Done()
+		defer base.cwg.Done()
 		if base.parse == nil {
 			return
 		}
@@ -78,13 +83,22 @@ func (base *inBaseCrawler) crawl() {
 	}()
 
 	// 关闭go协程，防止资源泄露
+	base.swg.Add(1)
 	go func() {
-		base.wg.Wait()
+		defer base.swg.Done()
+
+		// 等待crawl中的go协程完成
+		base.cwg.Wait()
 		close(base.str)
+
+		// 修改状态
 		base.mutf.Lock()
 		base.finalf = true
 		base.initf = false
 		base.mutf.Unlock()
+
+		// 等待计时器协程完成
+		base.twg.Wait()
 	}()
 }
 
@@ -101,9 +115,26 @@ func (base *inBaseCrawler) Crawl() <-chan string {
 	base.abort = make(chan struct{})
 
 	if base.timeout > 0 {
+		base.twg.Add(1)
 		go func() {
-			<-time.After(base.timeout)
-			base.Stop()
+			defer base.twg.Done()
+			tick := time.After(base.timeout)
+
+			for {
+				select {
+				case <-tick:
+					base.Stop()
+					return
+				default:
+					base.mutf.RLock()
+					if base.finalf {
+						base.mutf.RUnlock()
+						return
+					}
+					base.mutf.RUnlock()
+				}
+			}
+
 		}()
 	}
 
@@ -115,14 +146,12 @@ func (base *inBaseCrawler) Crawl() <-chan string {
 }
 
 func (base *inBaseCrawler) Stop() {
-	base.mutf.Lock()
-	defer base.mutf.Unlock()
-	if base.initf {
-		if !base.finalf {
-			close(base.abort) // 对子go协程进行广播，如果不关闭此通道，协程也会正常退出
-			base.wg.Wait()
-		}
+	base.mutf.RLock()
+	if base.initf && !base.finalf {
+		close(base.abort) // 对子go协程进行广播，如果不关闭此通道，协程也会正常退出
 	}
+	base.mutf.RUnlock()
+	base.swg.Wait()
 }
 
 // kdl公共代理
