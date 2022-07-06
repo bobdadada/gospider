@@ -91,21 +91,25 @@ func (base *inBaseCrawler) crawl() {
 		base.cwg.Wait()
 		close(base.str)
 
-		// 修改状态
+		// 修改结束状态
 		base.mutf.Lock()
 		base.finalf = true
-		base.initf = false
 		base.mutf.Unlock()
 
 		// 等待计时器协程完成
 		base.twg.Wait()
+
+		// 修改初始化状态
+		base.mutf.Lock()
+		base.initf = false
+		base.mutf.Unlock()
 	}()
 }
 
 func (base *inBaseCrawler) Crawl() <-chan string {
 	base.mutf.Lock()
 	defer base.mutf.Unlock()
-	if base.initf && !base.finalf {
+	if base.initf {
 		return base.str
 	}
 
