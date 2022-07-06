@@ -10,7 +10,7 @@ import (
 func TestCrawler(t *testing.T) {
 
 	for _, crawler := range proxypool.DefaultCrawlers {
-		fmt.Printf("no:\tproxy %d\n", crawler)
+		fmt.Printf("crawler:\tproxy %d\n", crawler)
 
 		n := 1
 		for proxy := range crawler.Crawl() {

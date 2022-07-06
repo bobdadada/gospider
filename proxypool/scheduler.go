@@ -124,7 +124,6 @@ func (sch *Scheduler) detect() {
 				}(proxy)
 			}
 		}
-
 		workwg.Wait()
 		close(resCh)
 	}()
@@ -220,7 +219,7 @@ func (sch *Scheduler) crawl() {
 		}
 	}()
 
-	workCh := make(chan struct{}, 5)
+	workCh := make(chan struct{}, runtime.NumCPU())
 	var workwg sync.WaitGroup
 
 crawlerloop:

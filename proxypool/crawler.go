@@ -43,6 +43,7 @@ func init() {
 		NewihuanCrawler(60*60, 5, 2000),
 		NewkxCrawler(60*60, 5),
 		NewzdyCrawler(60*60, 5),
+		NewxsdlCrawler(60*60, 5),
 	)
 
 	for _, c := range DefaultStoppableCrawlers {
@@ -68,7 +69,6 @@ type inBaseCrawler struct {
 	initf  bool         // 开始爬取的初始化标志
 	finalf bool         // 结束爬取的标志
 	mutf   sync.RWMutex // 状态锁
-
 }
 
 func (base *inBaseCrawler) crawl() {
@@ -198,11 +198,25 @@ func NewkdlCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 					}
 
 					doc := soup.HTMLParse(html)
-					proxynodes := doc.FindStrict("table", "class", "table table-bordered table-striped").Find("tbody")
-					for _, node := range proxynodes.FindAll("tr") {
-						ip := node.Find("td", "data-title", "IP").Text()
-						port := node.Find("td", "data-title", "PORT").Text()
-						typ := strings.ToLower(node.Find("td", "data-title", "类型").Text())
+					if doc.Error != nil {
+						break pageloop
+					}
+					table := doc.FindStrict("table", "class", "table table-bordered table-striped")
+					if table.Error != nil {
+						break pageloop
+					}
+					tbody := table.Find("tbody")
+					if tbody.Error != nil {
+						break pageloop
+					}
+					for _, tr := range tbody.FindAll("tr") {
+						if tr.Error != nil {
+							continue
+						}
+
+						ip := tr.Find("td", "data-title", "IP").Text()
+						port := tr.Find("td", "data-title", "PORT").Text()
+						typ := strings.ToLower(tr.Find("td", "data-title", "类型").Text())
 
 						addr := fmt.Sprintf("%s://%s:%s", typ, ip, port)
 
@@ -267,7 +281,14 @@ func Newip89Crawler(timeout, interval int) *inBaseCrawler {
 				}
 
 				doc := soup.HTMLParse(html)
-				tbody := doc.FindStrict("table", "class", "layui-table").Find("tbody")
+				if doc.Error != nil {
+					return
+				}
+				table := doc.FindStrict("table", "class", "layui-table")
+				if table.Error != nil {
+					return
+				}
+				tbody := table.Find("tbody")
 				if tbody.Error != nil {
 					return
 				}
@@ -388,7 +409,14 @@ func Newip3366Crawler(timeout, interval int) *inBaseCrawler {
 				}
 
 				doc := soup.HTMLParse(html)
-				tbody := doc.FindStrict("table", "class", "table table-bordered table-striped").Find("tbody")
+				if doc.Error != nil {
+					return
+				}
+				table := doc.FindStrict("table", "class", "table table-bordered table-striped")
+				if table.Error != nil {
+					return
+				}
+				tbody := table.Find("tbody")
 				if tbody.Error != nil {
 					return
 				}
@@ -466,7 +494,14 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 				}
 
 				doc := soup.HTMLParse(html)
-				tbody := doc.FindStrict("table", "class", "table table-hover table-bordered").Find("tbody")
+				if doc.Error != nil {
+					return
+				}
+				table := doc.FindStrict("table", "class", "table table-hover table-bordered")
+				if table.Error != nil {
+					return
+				}
+				tbody := table.Find("tbody")
 				if tbody.Error != nil {
 					return
 				}
@@ -576,7 +611,14 @@ func NewkxCrawler(timeout, interval int) *inBaseCrawler {
 					}
 
 					doc := soup.HTMLParse(html)
-					tbody := doc.FindStrict("table", "class", "active").Find("tbody")
+					if doc.Error != nil {
+						return
+					}
+					table := doc.FindStrict("table", "class", "active")
+					if table.Error != nil {
+						return
+					}
+					tbody := table.Find("tbody")
 					if tbody.Error != nil {
 						return
 					}
@@ -636,7 +678,7 @@ func NewzdyCrawler(timeout, interval int) *inBaseCrawler {
 			startURL = "https://www.zdaye.com"
 		)
 
-		var newdateindex string
+		var newdateindex int
 
 		now := time.Now()
 		url := fmt.Sprintf("%s/dayProxy/%d/%d/1.html", startURL, now.Year(), int(now.Month()))
@@ -652,7 +694,14 @@ func NewzdyCrawler(timeout, interval int) *inBaseCrawler {
 				}
 			}
 			doc := soup.HTMLParse(html)
-			a := doc.Find("h3", "class", "thread_title").Find("a")
+			if doc.Error != nil {
+				return
+			}
+			title := doc.Find("h3", "class", "thread_title")
+			if title.Error != nil {
+				return
+			}
+			a := title.Find("a")
 			if a.Error != nil {
 				return
 			}
@@ -660,60 +709,189 @@ func NewzdyCrawler(timeout, interval int) *inBaseCrawler {
 			if href == "" {
 				return
 			}
-			newdateindex = href[:len(href)-5]
+			href = href[:len(href)-5]
+			sp := strings.Split(href, "/")
+			ind, err := strconv.Atoi(sp[len(sp)-1])
+			if err != nil {
+				return
+			}
+			newdateindex = ind
 			break ploop
 		}
 
-		page := 1
+		index := newdateindex - 3
 
-	pageloop:
-		for {
-			url := startURL + newdateindex + "/" + strconv.Itoa(page) + ".html"
-			html, err := soup.Get(url)
-			if err != nil {
-				select {
-				case <-zdy.abort:
-					return
-				case <-time.After(2 * time.Second):
-					continue pageloop
-				}
-			}
-			doc := soup.HTMLParse(html)
-			tbody := doc.FindStrict("table", "id", "ipc").Find("tbody")
-			if tbody.Error != nil {
-				return
-			}
-			trs := tbody.FindAll("tr")
-			if len(trs) == 0 {
-				return
-			}
-			for _, tr := range trs {
-				if tr.Error != nil {
-					continue
-				}
-				tds := tr.FindAll("td")
-				if len(tds) >= 5 {
-					ip := strings.TrimSpace(tds[0].Text())
-					port := strings.TrimSpace(tds[1].Text())
-					typ := strings.ToLower(strings.TrimSpace(tds[2].Text()))
+		for index <= newdateindex {
+
+			indURL := startURL + "/dayProxy/ip/" + strconv.Itoa(index) + "/"
+			page := 1
+
+		pageloop:
+			for {
+				url = indURL + strconv.Itoa(page) + ".html"
+				html, err := soup.Get(url)
+				if err != nil {
 					select {
 					case <-zdy.abort:
 						return
-					case zdy.str <- fmt.Sprintf("%s://%s:%s", typ, ip, port):
+					case <-time.After(2 * time.Second):
+						continue pageloop
 					}
 				}
-			}
-			select {
-			case <-zdy.abort:
-				return
-			case <-time.After(zdy.interval + time.Second*time.Duration(rand.Intn(5))):
-				page++
+				doc := soup.HTMLParse(html)
+				if doc.Error != nil {
+					break pageloop
+				}
+				ipc := doc.FindStrict("table", "id", "ipc")
+				if ipc.Error != nil {
+					break pageloop
+				}
+				tbody := ipc.Find("tbody")
+				if tbody.Error != nil {
+					break pageloop
+				}
+				trs := tbody.FindAll("tr")
+				if len(trs) == 0 {
+					break pageloop
+				}
+				for _, tr := range trs {
+					if tr.Error != nil {
+						continue
+					}
+					tds := tr.FindAll("td")
+					if len(tds) >= 5 {
+						ip := strings.TrimSpace(tds[0].Text())
+						port := strings.TrimSpace(tds[1].Text())
+						typ := strings.ToLower(strings.TrimSpace(tds[2].Text()))
+						select {
+						case <-zdy.abort:
+							return
+						case zdy.str <- fmt.Sprintf("%s://%s:%s", typ, ip, port):
+						}
+					}
+				}
+				select {
+				case <-zdy.abort:
+					return
+				case <-time.After(zdy.interval + time.Second*time.Duration(rand.Intn(5))):
+					page++
+				}
 			}
 		}
 
 	}
 
 	return zdy
+}
+
+// 小舒公共代理
+func NewxsdlCrawler(timeout, interval int) *inBaseCrawler {
+	xsdl := &inBaseCrawler{
+		timeout:  time.Duration(timeout) * time.Second,
+		interval: time.Duration(interval) * time.Second,
+	}
+
+	xsdl.parse = func() {
+		const (
+			startURL = "https://www.xsdaili.cn"
+		)
+
+		var newdateindex int
+
+		url := fmt.Sprintf("%s/dayProxy/1.html", startURL)
+	ploop:
+		for {
+			html, err := soup.Get(url)
+			if err != nil {
+				select {
+				case <-xsdl.abort:
+					return
+				case <-time.After(2 * time.Second):
+					continue ploop
+				}
+			}
+			doc := soup.HTMLParse(html)
+			if doc.Error != nil {
+				return
+			}
+			title := doc.Find("div", "class", "title")
+			if title.Error != nil {
+				return
+			}
+			a := title.Find("a")
+			if a.Error != nil {
+				return
+			}
+			href := a.Attrs()["href"]
+			if href == "" {
+				return
+			}
+			href = href[:len(href)-5]
+			sp := strings.Split(href, "/")
+			ind, err := strconv.Atoi(sp[len(sp)-1])
+			if err != nil {
+				return
+			}
+			newdateindex = ind
+			break ploop
+		}
+
+		index := newdateindex - 3
+		indexURL := startURL + "/dayProxy/ip/"
+
+	indexloop:
+		for index <= newdateindex {
+			url := indexURL + strconv.Itoa(index) + ".html"
+			html, err := soup.Get(url)
+			if err != nil {
+				select {
+				case <-xsdl.abort:
+					return
+				case <-time.After(2 * time.Second):
+					continue indexloop
+				}
+			}
+			doc := soup.HTMLParse(html)
+			if doc.Error != nil {
+				return
+			}
+			body := doc.FindStrict("div", "class", "cont")
+			if body.Error != nil {
+				return
+			}
+
+			for _, child := range body.Children() {
+				if child.Error != nil {
+					continue
+				}
+				html := strings.TrimSpace(child.HTML())
+				if html == "<br/>" {
+					continue
+				}
+				s := strings.Split(html, "#")[0]
+				sp := strings.Split(s, "@")
+				if len(sp) == 2 {
+					addr := sp[0]
+					typ := strings.ToLower(sp[1])
+					select {
+					case <-xsdl.abort:
+						return
+					case xsdl.str <- fmt.Sprintf("%s://%s", typ, addr):
+					}
+				}
+			}
+
+			select {
+			case <-xsdl.abort:
+				return
+			case <-time.After(xsdl.interval + time.Second*time.Duration(rand.Intn(5))):
+				index++
+			}
+		}
+
+	}
+
+	return xsdl
 }
 
 /*
