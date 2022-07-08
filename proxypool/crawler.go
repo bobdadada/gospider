@@ -1,9 +1,15 @@
 package proxypool
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"gospider"
+	"io/ioutil"
 	"math/rand"
+	"mime/multipart"
+	"net/http"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,12 +50,17 @@ func init() {
 		NewkxCrawler(60*60, 5),
 		NewzdyCrawler(60*60, 5),
 		NewxsdlCrawler(60*60, 5),
+		NewmimvpCrawler(60*60, 5),
 	)
 
 	for _, c := range DefaultStoppableCrawlers {
 		DefaultCrawlers = append(DefaultCrawlers, c)
 	}
-	DefaultCrawlers = append(DefaultCrawlers, NewyqieCrawler())
+	DefaultCrawlers = append(
+		DefaultCrawlers,
+		NewyqieCrawler(),
+		NewffseoCrawler(),
+	)
 }
 
 type inBaseCrawler struct {
@@ -63,8 +74,8 @@ type inBaseCrawler struct {
 	twg sync.WaitGroup // 定时器等待
 	swg sync.WaitGroup // stop等待
 
-	str   chan string
-	abort chan struct{}
+	proxyCh chan string
+	abort   chan struct{}
 
 	initf  bool         // 开始爬取的初始化标志
 	finalf bool         // 结束爬取的标志
@@ -89,7 +100,7 @@ func (base *inBaseCrawler) crawl() {
 
 		// 等待crawl中的go协程完成
 		base.cwg.Wait()
-		close(base.str)
+		close(base.proxyCh)
 
 		// 修改结束状态
 		base.mutf.Lock()
@@ -110,12 +121,12 @@ func (base *inBaseCrawler) Crawl() <-chan string {
 	base.mutf.Lock()
 	defer base.mutf.Unlock()
 	if base.initf {
-		return base.str
+		return base.proxyCh
 	}
 
 	base.finalf = false
 
-	base.str = make(chan string, 5)
+	base.proxyCh = make(chan string, 5)
 	base.abort = make(chan struct{})
 
 	if base.timeout > 0 {
@@ -146,7 +157,7 @@ func (base *inBaseCrawler) Crawl() <-chan string {
 
 	base.initf = true
 
-	return base.str
+	return base.proxyCh
 }
 
 func (base *inBaseCrawler) Stop() {
@@ -227,7 +238,7 @@ func NewkdlCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 						select {
 						case <-kdl.abort:
 							return
-						case kdl.str <- addr:
+						case kdl.proxyCh <- addr:
 							num++
 							if kdl.maxnum > 0 && num >= kdl.maxnum {
 								return
@@ -312,7 +323,7 @@ func Newip89Crawler(timeout, interval int) *inBaseCrawler {
 						select {
 						case <-ip89.abort:
 							return
-						case ip89.str <- fmt.Sprintf("%s:%s", ip, port):
+						case ip89.proxyCh <- fmt.Sprintf("%s:%s", ip, port):
 						}
 					}
 				}
@@ -337,7 +348,7 @@ func NewyqieCrawler() CrawlerFunc {
 		const (
 			startURL = "http://ip.yqie.com/ipproxy.htm"
 		)
-		str := make(chan string, 5)
+		proxyCh := make(chan string, 5)
 
 		var wg sync.WaitGroup
 
@@ -356,7 +367,11 @@ func NewyqieCrawler() CrawlerFunc {
 				if table.Error != nil {
 					continue
 				}
-				for _, tr := range table.FindAll("tr") {
+				tbody := table.Find("tbody")
+				if tbody.Error != nil {
+					continue
+				}
+				for _, tr := range tbody.FindAll("tr") {
 					tds := tr.FindAll("td")
 					if len(tds) == 0 {
 						continue
@@ -365,7 +380,7 @@ func NewyqieCrawler() CrawlerFunc {
 						ip := tds[0].Text()
 						port := tds[1].Text()
 						typ := strings.ToLower(tds[4].Text())
-						str <- fmt.Sprintf("%s://%s:%s", typ, ip, port)
+						proxyCh <- fmt.Sprintf("%s://%s:%s", typ, ip, port)
 					}
 				}
 			}
@@ -373,10 +388,10 @@ func NewyqieCrawler() CrawlerFunc {
 
 		go func() {
 			wg.Wait()
-			close(str)
+			close(proxyCh)
 		}()
 
-		return str
+		return proxyCh
 	}
 	return CrawlerFunc(f)
 }
@@ -441,7 +456,7 @@ func Newip3366Crawler(timeout, interval int) *inBaseCrawler {
 						select {
 						case <-ip3366.abort:
 							return
-						case ip3366.str <- fmt.Sprintf("%s://%s:%s", typ, ip, port):
+						case ip3366.proxyCh <- fmt.Sprintf("%s://%s:%s", typ, ip, port):
 						}
 					}
 				}
@@ -531,7 +546,7 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 						select {
 						case <-ihuan.abort:
 							return
-						case ihuan.str <- fmt.Sprintf("%s%s:%s", typ, ip, port):
+						case ihuan.proxyCh <- fmt.Sprintf("%s%s:%s", typ, ip, port):
 							num++
 							if ihuan.maxnum > 0 && num >= ihuan.maxnum {
 								return
@@ -649,7 +664,7 @@ func NewkxCrawler(timeout, interval int) *inBaseCrawler {
 							select {
 							case <-kx.abort:
 								return
-							case kx.str <- fmt.Sprintf("%s%s:%s", typ, ip, port):
+							case kx.proxyCh <- fmt.Sprintf("%s%s:%s", typ, ip, port):
 							}
 						}
 					}
@@ -770,7 +785,7 @@ func NewzdyCrawler(timeout, interval int) *inBaseCrawler {
 						select {
 						case <-zdy.abort:
 							return
-						case zdy.str <- fmt.Sprintf("%s://%s:%s", typ, ip, port):
+						case zdy.proxyCh <- fmt.Sprintf("%s://%s:%s", typ, ip, port):
 						}
 					}
 				}
@@ -880,7 +895,7 @@ func NewxsdlCrawler(timeout, interval int) *inBaseCrawler {
 					select {
 					case <-xsdl.abort:
 						return
-					case xsdl.str <- fmt.Sprintf("%s://%s", typ, addr):
+					case xsdl.proxyCh <- fmt.Sprintf("%s://%s", typ, addr):
 					}
 				}
 			}
@@ -898,64 +913,241 @@ func NewxsdlCrawler(timeout, interval int) *inBaseCrawler {
 	return xsdl
 }
 
-/*
-//米扑代理
-func NewmimvpCrawler() CrawlerFunc {
-	fn := func() <-chan string {
+// 方法SEO代理
+func NewffseoCrawler() CrawlerFunc {
+	f := func() <-chan string {
 		const (
-			startURL = "https://proxy.mimvp.com"
-			freeopen = "/freeopen?proxy="
+			startURL = "https://proxy.seofangfa.com/"
 		)
-		ptypes := [...]string{"in_hp", "in_tp", "in_socks", "out_hp", "out_tp", "out_socks"}
+		proxyCh := make(chan string, 5)
 
-		sclient := gosseract.NewClient()
-		defer sclient.Close()
-
-		str := make(chan string, 5)
 		var wg sync.WaitGroup
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
-			for _, ptype := range ptypes {
-				url := startURL + freeopen + ptype
+			html, err := soup.Get(startURL)
+			if err != nil {
+				return
+			}
+			doc := soup.HTMLParse(html)
+			if doc.Error != nil {
+				return
+			}
 
-				s, err := soup.Get(url)
-				if err != nil {
+			table := doc.Find("table", "class", "table")
+			if table.Error != nil {
+				return
+			}
+			tbody := table.Find("tbody")
+			if tbody.Error != nil {
+				return
+			}
+			for _, tr := range tbody.FindAll("tr") {
+				tds := tr.FindAll("td")
+				if len(tds) == 0 {
 					continue
+				}
+				if len(tds) >= 5 {
+					ip := tds[0].Text()
+					port := tds[1].Text()
+					proxyCh <- fmt.Sprintf("%s:%s", ip, port)
+				}
+			}
+
+		}()
+
+		go func() {
+			wg.Wait()
+			close(proxyCh)
+		}()
+
+		return proxyCh
+	}
+	return CrawlerFunc(f)
+}
+
+//米扑代理
+func NewmimvpCrawler(timeout, interval int) *inBaseCrawler {
+	mimvp := &inBaseCrawler{
+		timeout:  time.Duration(timeout) * time.Second,
+		interval: time.Duration(interval) * time.Second,
+	}
+
+	mimvp.parse = func() {
+		const (
+			startURL = "https://proxy.mimvp.com"
+			freeopen = "/freeopen?proxy="
+
+			ocrStartURL = "https://uutool.cn/ocr/"
+			ocrAPIURL   = "https://api.uutool.cn/photo/ocr/"
+		)
+
+		type imgDetectType struct {
+			Status int `json:"status"`
+			Data   struct {
+				Count int      `json:"count"`
+				Rows  []string `json:"rows"`
+			} `json:"data"`
+			ReqID string `json:"req_id"`
+		}
+
+		// 使用第三方API完成OCR
+		parsePortImg := func(imgurl string) (string, bool) {
+			var token string
+			var image []byte
+
+			// 获取token
+			{
+				s, err := soup.Get(ocrStartURL)
+				if err != nil {
+					return "", false
 				}
 				doc := soup.HTMLParse(s)
 				if doc.Error != nil {
-					continue
+					return "", false
 				}
-
-				table := doc.FindStrict("table", "class", "mimvp-tbl free-proxylist-tbl")
-				if table.Error != nil {
-					continue
+				tb := doc.Find("div", "id", "toolBox")
+				if tb.Error != nil {
+					return "", false
 				}
-				tbody := table.FindStrict("tbody")
-				if tbody.Error != nil {
-					continue
+				token = tb.Attrs()["data-token"]
+			}
+
+			// 获取图片
+			{
+				resp, err := http.Get(imgurl)
+				if err != nil {
+					return "", false
 				}
+				body, err := ioutil.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil {
+					return "", false
+				}
+				image = body
+			}
 
-				for _, tr := range tbody.FindAll("tr") {
-					if tr.Error != nil {
-						continue
-					}
-					ip := tr.Find("td", "class", "free-proxylist-tbl-proxy-ip").Text()
-					typ := strings.ToLower(tr.Find("td", "class", "free-proxylist-tbl-proxy-type").Text())
+			buf := &bytes.Buffer{}
 
-					portURL := startURL + tr.Find("td", "class", "free-proxylist-tbl-proxy-port").Find("img").Attrs()["src"]
-					// TODO
+			bodywritter := multipart.NewWriter(buf)
+			bodywritter.WriteField("token", token)
+			h := make(textproto.MIMEHeader)
+			h.Set("Content-Disposition", `form-data; name="file"; filename="image.png"`)
+			h.Set("Content-Type", "image/png")
+			w, err := bodywritter.CreatePart(h)
+			if err != nil {
+				return "", false
+			}
+			w.Write(image)
+
+			contenttype := bodywritter.FormDataContentType()
+			bodywritter.Close()
+
+			req, err := http.NewRequest("POST", ocrAPIURL, buf)
+			if err != nil {
+				return "", false
+			}
+			req.Header.Set("User-Agent", gospider.UserAgent)
+			req.Header.Set("Content-Type", contenttype)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return "", false
+			}
+			body, err := ioutil.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				return "", false
+			}
+
+			res := &imgDetectType{}
+			json.Unmarshal(body, res)
+
+			if res.Status != 1 {
+				return "", false
+			}
+
+			return res.Data.Rows[0], true
+		}
+
+		ptypes := [...]string{"in_hp", "in_tp", "in_socks", "out_hp", "out_tp", "out_socks"}
+		i := 0
+
+	ploop:
+		for i < len(ptypes) {
+			url := startURL + freeopen + ptypes[i]
+
+			s, err := soup.Get(url)
+			if err != nil {
+				select {
+				case <-mimvp.abort:
+					return
+				case <-time.After(2 * time.Second):
+					continue ploop
 				}
 			}
-		}()
-		go func() {
-			wg.Wait()
-			close(str)
-		}()
-		return str
+
+			doc := soup.HTMLParse(s)
+			if doc.Error != nil {
+				return
+			}
+			table := doc.FindStrict("table", "class", "mimvp-tbl free-proxylist-tbl")
+			if table.Error != nil {
+				return
+			}
+			tbody := table.FindStrict("tbody")
+			if tbody.Error != nil {
+				return
+			}
+
+			for _, tr := range tbody.FindAll("tr") {
+				if tr.Error != nil {
+					continue
+				}
+
+				typNode := tr.Find("td", "class", "free-proxylist-tbl-proxy-type")
+				if typNode.Error != nil {
+					continue
+				}
+				typ := strings.ToLower(typNode.Text())
+
+				ipNode := tr.Find("td", "class", "free-proxylist-tbl-proxy-ip")
+				if ipNode.Error != nil {
+					continue
+				}
+				ip := ipNode.Text()
+
+				portNode := tr.Find("td", "class", "free-proxylist-tbl-proxy-port")
+				if portNode.Error != nil {
+					continue
+				}
+				portImgNode := portNode.Find("img")
+				if portImgNode.Error != nil {
+					continue
+				}
+				select {
+				case <-time.After(10 * time.Second):
+					port, ok := parsePortImg(startURL + portImgNode.Attrs()["src"])
+					if !ok {
+						return
+					}
+					mimvp.proxyCh <- fmt.Sprintf("%s://%s:%s", typ, ip, port)
+				case <-mimvp.abort:
+					return
+				}
+			}
+
+			select {
+			case <-mimvp.abort:
+				return
+			case <-time.After(mimvp.interval):
+				i++
+			}
+		}
+
 	}
-	return CrawlerFunc(fn)
-}*/
+
+	return mimvp
+}

@@ -25,6 +25,8 @@ func TestCrawler(t *testing.T) {
 			if n > 20 {
 				if c, ok := crawler.(proxypool.StoppableCrawler); ok {
 					c.Stop()
+				} else {
+					break
 				}
 			}
 
