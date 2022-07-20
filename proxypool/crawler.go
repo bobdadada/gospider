@@ -75,10 +75,11 @@ type inBaseCrawler struct {
 	swg sync.WaitGroup // stop等待
 
 	proxyCh chan string
-	abort   chan struct{}
+	abortCh chan struct{}
 
 	initf  bool         // 开始爬取的初始化标志
 	finalf bool         // 结束爬取的标志
+	abortf bool         // 放弃标志
 	mutf   sync.RWMutex // 状态锁
 }
 
@@ -125,9 +126,10 @@ func (base *inBaseCrawler) Crawl() <-chan string {
 	}
 
 	base.finalf = false
+	base.abortf = false
 
 	base.proxyCh = make(chan string, 5)
-	base.abort = make(chan struct{})
+	base.abortCh = make(chan struct{})
 
 	if base.timeout > 0 {
 		base.twg.Add(1)
@@ -138,7 +140,7 @@ func (base *inBaseCrawler) Crawl() <-chan string {
 			for {
 				select {
 				case <-tick:
-					base.Stop()
+					base.stop()
 					return
 				default:
 					base.mutf.RLock()
@@ -160,12 +162,17 @@ func (base *inBaseCrawler) Crawl() <-chan string {
 	return base.proxyCh
 }
 
-func (base *inBaseCrawler) Stop() {
+func (base *inBaseCrawler) stop() {
 	base.mutf.RLock()
-	if base.initf && !base.finalf {
-		close(base.abort) // 对子go协程进行广播，如果不关闭此通道，协程也会正常退出
+	if !base.abortf {
+		close(base.abortCh) // 对子go协程进行广播，如果不关闭此通道，协程也会正常退出
+		base.abortf = true
 	}
 	base.mutf.RUnlock()
+}
+
+func (base *inBaseCrawler) Stop() {
+	base.stop()
 	base.swg.Wait()
 }
 
@@ -194,7 +201,7 @@ func NewkdlCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 		pageloop:
 			for {
 				select {
-				case <-kdl.abort:
+				case <-kdl.abortCh:
 					return
 				default:
 					url := u + strconv.Itoa(page) + "/"
@@ -207,7 +214,7 @@ func NewkdlCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 						select {
 						case <-time.After(1 * time.Second):
 							continue pageloop
-						case <-kdl.abort:
+						case <-kdl.abortCh:
 							return
 						}
 					}
@@ -236,7 +243,7 @@ func NewkdlCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 						addr := fmt.Sprintf("%s://%s:%s", typ, ip, port)
 
 						select {
-						case <-kdl.abort:
+						case <-kdl.abortCh:
 							return
 						case kdl.proxyCh <- addr:
 							num++
@@ -247,7 +254,7 @@ func NewkdlCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 					}
 
 					select {
-					case <-kdl.abort:
+					case <-kdl.abortCh:
 						break mainloop
 					case <-time.After(kdl.interval + time.Second*time.Duration(rand.Intn(5))):
 						page++
@@ -279,7 +286,7 @@ func Newip89Crawler(timeout, interval int) *inBaseCrawler {
 	loop:
 		for {
 			select {
-			case <-ip89.abort:
+			case <-ip89.abortCh:
 				return
 			default:
 
@@ -290,7 +297,7 @@ func Newip89Crawler(timeout, interval int) *inBaseCrawler {
 					select {
 					case <-time.After(1 * time.Second):
 						continue loop
-					case <-ip89.abort:
+					case <-ip89.abortCh:
 						return
 					}
 				}
@@ -321,7 +328,7 @@ func Newip89Crawler(timeout, interval int) *inBaseCrawler {
 						ip := strings.TrimSpace(tds[0].Text())
 						port := strings.TrimSpace(tds[1].Text())
 						select {
-						case <-ip89.abort:
+						case <-ip89.abortCh:
 							return
 						case ip89.proxyCh <- fmt.Sprintf("%s:%s", ip, port):
 						}
@@ -329,7 +336,7 @@ func Newip89Crawler(timeout, interval int) *inBaseCrawler {
 				}
 
 				select {
-				case <-ip89.abort:
+				case <-ip89.abortCh:
 					return
 				case <-time.After(ip89.interval + time.Second*time.Duration(rand.Intn(5))):
 					page++
@@ -412,7 +419,7 @@ func Newip3366Crawler(timeout, interval int) *inBaseCrawler {
 	loop:
 		for page <= 10 {
 			select {
-			case <-ip3366.abort:
+			case <-ip3366.abortCh:
 				return
 			default:
 				url := startURL + "&page=" + strconv.Itoa(page)
@@ -422,7 +429,7 @@ func Newip3366Crawler(timeout, interval int) *inBaseCrawler {
 					select {
 					case <-time.After(1 * time.Second):
 						continue loop
-					case <-ip3366.abort:
+					case <-ip3366.abortCh:
 						return
 					}
 				}
@@ -454,7 +461,7 @@ func Newip3366Crawler(timeout, interval int) *inBaseCrawler {
 						port := strings.TrimSpace(tds[1].Text())
 						typ := strings.ToLower(strings.TrimSpace(tds[3].Text()))
 						select {
-						case <-ip3366.abort:
+						case <-ip3366.abortCh:
 							return
 						case ip3366.proxyCh <- fmt.Sprintf("%s://%s:%s", typ, ip, port):
 						}
@@ -462,7 +469,7 @@ func Newip3366Crawler(timeout, interval int) *inBaseCrawler {
 				}
 
 				select {
-				case <-ip3366.abort:
+				case <-ip3366.abortCh:
 					return
 				case <-time.After(ip3366.interval + time.Second*time.Duration(rand.Intn(5))):
 					page++
@@ -498,7 +505,7 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 	loop:
 		for {
 			select {
-			case <-ihuan.abort:
+			case <-ihuan.abortCh:
 				return
 			default:
 
@@ -507,7 +514,7 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 					select {
 					case <-time.After(1 * time.Second):
 						continue loop
-					case <-ihuan.abort:
+					case <-ihuan.abortCh:
 						return
 					}
 				}
@@ -544,7 +551,7 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 							typ = "http://"
 						}
 						select {
-						case <-ihuan.abort:
+						case <-ihuan.abortCh:
 							return
 						case ihuan.proxyCh <- fmt.Sprintf("%s%s:%s", typ, ip, port):
 							num++
@@ -580,7 +587,7 @@ func NewihuanCrawler(timeout, interval, maxnum int) *inBaseCrawler {
 				delete(pagemap, strconv.Itoa(page))
 
 				select {
-				case <-ihuan.abort:
+				case <-ihuan.abortCh:
 					return
 				case <-time.After(ihuan.interval + time.Second*time.Duration(rand.Intn(5))):
 					page++
@@ -614,7 +621,7 @@ func NewkxCrawler(timeout, interval int) *inBaseCrawler {
 		pageloop:
 			for page <= 10 {
 				select {
-				case <-kx.abort:
+				case <-kx.abortCh:
 					return
 				default:
 					url := fmt.Sprintf("%s/%d/%d.html", startURL, i, page)
@@ -624,7 +631,7 @@ func NewkxCrawler(timeout, interval int) *inBaseCrawler {
 						select {
 						case <-time.After(1 * time.Second):
 							continue pageloop
-						case <-kx.abort:
+						case <-kx.abortCh:
 							return
 						}
 					}
@@ -662,7 +669,7 @@ func NewkxCrawler(timeout, interval int) *inBaseCrawler {
 							}
 
 							select {
-							case <-kx.abort:
+							case <-kx.abortCh:
 								return
 							case kx.proxyCh <- fmt.Sprintf("%s%s:%s", typ, ip, port):
 							}
@@ -670,7 +677,7 @@ func NewkxCrawler(timeout, interval int) *inBaseCrawler {
 					}
 
 					select {
-					case <-kx.abort:
+					case <-kx.abortCh:
 						return
 					case <-time.After(kx.interval + time.Second*time.Duration(rand.Intn(5))):
 						page++
@@ -706,7 +713,7 @@ func NewzdyCrawler(timeout, interval int) *inBaseCrawler {
 			html, err := soup.Get(url)
 			if err != nil {
 				select {
-				case <-zdy.abort:
+				case <-zdy.abortCh:
 					return
 				case <-time.After(2 * time.Second):
 					continue ploop
@@ -751,7 +758,7 @@ func NewzdyCrawler(timeout, interval int) *inBaseCrawler {
 				html, err := soup.Get(url)
 				if err != nil {
 					select {
-					case <-zdy.abort:
+					case <-zdy.abortCh:
 						return
 					case <-time.After(2 * time.Second):
 						continue pageloop
@@ -783,14 +790,14 @@ func NewzdyCrawler(timeout, interval int) *inBaseCrawler {
 						port := strings.TrimSpace(tds[1].Text())
 						typ := strings.ToLower(strings.TrimSpace(tds[2].Text()))
 						select {
-						case <-zdy.abort:
+						case <-zdy.abortCh:
 							return
 						case zdy.proxyCh <- fmt.Sprintf("%s://%s:%s", typ, ip, port):
 						}
 					}
 				}
 				select {
-				case <-zdy.abort:
+				case <-zdy.abortCh:
 					return
 				case <-time.After(zdy.interval + time.Second*time.Duration(rand.Intn(5))):
 					page++
@@ -823,7 +830,7 @@ func NewxsdlCrawler(timeout, interval int) *inBaseCrawler {
 			html, err := soup.Get(url)
 			if err != nil {
 				select {
-				case <-xsdl.abort:
+				case <-xsdl.abortCh:
 					return
 				case <-time.After(2 * time.Second):
 					continue ploop
@@ -864,7 +871,7 @@ func NewxsdlCrawler(timeout, interval int) *inBaseCrawler {
 			html, err := soup.Get(url)
 			if err != nil {
 				select {
-				case <-xsdl.abort:
+				case <-xsdl.abortCh:
 					return
 				case <-time.After(2 * time.Second):
 					continue indexloop
@@ -893,7 +900,7 @@ func NewxsdlCrawler(timeout, interval int) *inBaseCrawler {
 					addr := sp[0]
 					typ := strings.ToLower(sp[1])
 					select {
-					case <-xsdl.abort:
+					case <-xsdl.abortCh:
 						return
 					case xsdl.proxyCh <- fmt.Sprintf("%s://%s", typ, addr):
 					}
@@ -901,7 +908,7 @@ func NewxsdlCrawler(timeout, interval int) *inBaseCrawler {
 			}
 
 			select {
-			case <-xsdl.abort:
+			case <-xsdl.abortCh:
 				return
 			case <-time.After(xsdl.interval + time.Second*time.Duration(rand.Intn(5))):
 				index++
@@ -1082,7 +1089,7 @@ func NewmimvpCrawler(timeout, interval int) *inBaseCrawler {
 			s, err := soup.Get(url)
 			if err != nil {
 				select {
-				case <-mimvp.abort:
+				case <-mimvp.abortCh:
 					return
 				case <-time.After(2 * time.Second):
 					continue ploop
@@ -1134,13 +1141,13 @@ func NewmimvpCrawler(timeout, interval int) *inBaseCrawler {
 						return
 					}
 					mimvp.proxyCh <- fmt.Sprintf("%s://%s:%s", typ, ip, port)
-				case <-mimvp.abort:
+				case <-mimvp.abortCh:
 					return
 				}
 			}
 
 			select {
-			case <-mimvp.abort:
+			case <-mimvp.abortCh:
 				return
 			case <-time.After(mimvp.interval):
 				i++
