@@ -35,6 +35,7 @@ func (sch *Scheduler) Serve() {
 			sch.detect()
 			select {
 			case <-sch.abort:
+				log.Println("abort detect sevice.")
 				break loop
 			case <-time.After(time.Duration(sch.DetectCycle) * time.Second):
 			}
@@ -50,6 +51,7 @@ func (sch *Scheduler) Serve() {
 			sch.crawl()
 			select {
 			case <-sch.abort:
+				log.Println("abort crawl sevice.")
 				break loop
 			case <-time.After(time.Duration(sch.CrawlCycle) * time.Second):
 			}
@@ -61,9 +63,11 @@ func (sch *Scheduler) Serve() {
 		defer sch.wg.Done()
 		log.Println("start API sevice.")
 		sch.webserve()
+		log.Println("abort API sevice.")
 	}()
 
 	sch.wg.Wait()
+	log.Println("all sevice done.")
 }
 
 func (sch *Scheduler) Close() {
@@ -97,6 +101,7 @@ func (sch *Scheduler) detect() {
 				log.Print("unable to connect to external network, retry after 1 min.\n")
 				select {
 				case <-sch.abort:
+					log.Printf("abort retry to connect to external network.\n")
 					break loop
 				case <-time.After(1 * time.Minute):
 				}
@@ -104,6 +109,7 @@ func (sch *Scheduler) detect() {
 
 			select {
 			case <-sch.abort:
+				log.Printf("abort detect proxies.\n")
 				break loop
 			default:
 				workCh <- struct{}{}
@@ -124,6 +130,7 @@ func (sch *Scheduler) detect() {
 				}(proxy)
 			}
 		}
+
 		workwg.Wait()
 		close(resCh)
 	}()
@@ -137,6 +144,7 @@ func (sch *Scheduler) detect() {
 		for proxy := range addpCh {
 			select {
 			case <-sch.abort:
+				log.Printf("abort add available proxies.\n")
 				return
 			default:
 				log.Printf("proxy %s available.\n", proxy)
@@ -152,6 +160,7 @@ func (sch *Scheduler) detect() {
 		for proxy := range delpCh {
 			select {
 			case <-sch.abort:
+				log.Printf("abort delete inavailable proxies.\n")
 				return
 			default:
 				log.Printf("proxy %s inavailable.\n", proxy)
@@ -164,6 +173,7 @@ resloop:
 	for res := range resCh {
 		select {
 		case <-sch.abort:
+			log.Printf("abort analyze proxies.\n")
 			break resloop
 		default:
 			if res.err != nil {
@@ -183,6 +193,7 @@ resloop:
 	close(delpCh)
 
 	wg.Wait()
+	log.Println("detect sevice done.")
 }
 
 func (sch *Scheduler) crawl() {
@@ -211,46 +222,48 @@ func (sch *Scheduler) crawl() {
 		for proxy := range addpCh {
 			select {
 			case <-sch.abort:
+				log.Printf("abort add proxies.\n")
 				break addploop
 			default:
 				log.Printf("add proxy: %s\n", proxy)
 				sch.Storage.Add(proxy)
 			}
 		}
+		log.Println("stop add proxies.")
 	}()
 
-	workCh := make(chan struct{}, runtime.NumCPU())
-	var workwg sync.WaitGroup
-
-crawlerloop:
-	for _, crawler := range crawlers {
-		select {
-		case <-sch.abort:
-			break crawlerloop
-		default:
-			workCh <- struct{}{}
-			workwg.Add(1)
-			go func(c Crawler) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+	crawlerloop:
+		for _, crawler := range crawlers {
+			select {
+			case <-sch.abort:
+				log.Printf("abort get crawler.\n")
+				break crawlerloop
+			default:
 			loop:
-				for proxy := range c.Crawl() {
+				for proxy := range crawler.Crawl() {
 					select {
 					case <-sch.abort:
+						log.Printf("abort crawl proxies.\n")
 						break loop
 					case addpCh <- proxy:
 					}
 				}
-				if c, ok := c.(StoppableCrawler); ok {
+				if c, ok := crawler.(StoppableCrawler); ok {
 					c.Stop()
 				}
-				workwg.Done()
-				<-workCh
-			}(crawler)
-		}
-	}
-	workwg.Wait()
-	close(addpCh)
+			}
 
+		}
+	}()
+	wg.Wait()
+	close(addpCh)
 	addpwg.Wait()
+
+	log.Println("crawl sevice done.")
 }
 
 func (sch *Scheduler) webserve() error {
@@ -260,6 +273,7 @@ func (sch *Scheduler) webserve() error {
 
 	go func() {
 		<-sch.abort
+		log.Printf("abort web server.\n")
 		sch.webserver.Close()
 	}()
 

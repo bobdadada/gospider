@@ -51,16 +51,13 @@ func init() {
 		NewzdyCrawler(60*60, 5),
 		NewxsdlCrawler(60*60, 5),
 		NewmimvpCrawler(60*60, 5),
+		NewyqieCrawler(60*60, 5),
+		NewffseoCrawler(60*60, 5),
 	)
 
 	for _, c := range DefaultStoppableCrawlers {
 		DefaultCrawlers = append(DefaultCrawlers, c)
 	}
-	DefaultCrawlers = append(
-		DefaultCrawlers,
-		NewyqieCrawler(),
-		NewffseoCrawler(),
-	)
 }
 
 type inBaseCrawler struct {
@@ -71,8 +68,9 @@ type inBaseCrawler struct {
 	parse func() // 解析网页
 
 	cwg sync.WaitGroup // crawl等待
-	twg sync.WaitGroup // 定时器等待
 	swg sync.WaitGroup // stop等待
+
+	maxtimer *time.Timer //  超时定时器
 
 	proxyCh chan string
 	abortCh chan struct{}
@@ -108,8 +106,8 @@ func (base *inBaseCrawler) crawl() {
 		base.finalf = true
 		base.mutf.Unlock()
 
-		// 等待计时器协程完成
-		base.twg.Wait()
+		// 关闭计时器
+		base.maxtimer.Stop()
 
 		// 修改初始化状态
 		base.mutf.Lock()
@@ -132,27 +130,7 @@ func (base *inBaseCrawler) Crawl() <-chan string {
 	base.abortCh = make(chan struct{})
 
 	if base.timeout > 0 {
-		base.twg.Add(1)
-		go func() {
-			defer base.twg.Done()
-			tick := time.After(base.timeout)
-
-			for {
-				select {
-				case <-tick:
-					base.stop()
-					return
-				default:
-					base.mutf.RLock()
-					if base.finalf {
-						base.mutf.RUnlock()
-						return
-					}
-					base.mutf.RUnlock()
-				}
-			}
-
-		}()
+		base.maxtimer = time.AfterFunc(base.timeout, base.stop)
 	}
 
 	base.crawl()
@@ -350,57 +328,55 @@ func Newip89Crawler(timeout, interval int) *inBaseCrawler {
 }
 
 // yqie公共代理
-func NewyqieCrawler() CrawlerFunc {
-	f := func() <-chan string {
+func NewyqieCrawler(timeout, interval int) *inBaseCrawler {
+
+	yqie := &inBaseCrawler{
+		timeout:  time.Duration(timeout) * time.Second,
+		interval: time.Duration(interval) * time.Second,
+	}
+
+	yqie.parse = func() {
 		const (
 			startURL = "http://ip.yqie.com/ipproxy.htm"
 		)
-		proxyCh := make(chan string, 5)
 
-		var wg sync.WaitGroup
+		s, err := soup.Get(startURL)
+		if err != nil {
+			return
+		}
+		doc := soup.HTMLParse(s)
+		if doc.Error != nil {
+			return
+		}
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			s, err := soup.Get(startURL)
-			if err != nil {
-				return
+		for _, table := range doc.FindAll("table", "id", "GridViewOrder") {
+			if table.Error != nil {
+				continue
 			}
-			doc := soup.HTMLParse(s)
-			if doc.Error != nil {
-				return
+			tbody := table.Find("tbody")
+			if tbody.Error != nil {
+				continue
 			}
-			for _, table := range doc.FindAll("table", "id", "GridViewOrder") {
-				if table.Error != nil {
+			for _, tr := range tbody.FindAll("tr") {
+				tds := tr.FindAll("td")
+				if len(tds) == 0 {
 					continue
 				}
-				tbody := table.Find("tbody")
-				if tbody.Error != nil {
-					continue
-				}
-				for _, tr := range tbody.FindAll("tr") {
-					tds := tr.FindAll("td")
-					if len(tds) == 0 {
-						continue
-					}
-					if len(tds) >= 6 {
-						ip := tds[0].Text()
-						port := tds[1].Text()
-						typ := strings.ToLower(tds[4].Text())
-						proxyCh <- fmt.Sprintf("%s://%s:%s", typ, ip, port)
+				if len(tds) >= 6 {
+					ip := tds[0].Text()
+					port := tds[1].Text()
+					typ := strings.ToLower(tds[4].Text())
+					select {
+					case <-yqie.abortCh:
+						return
+					case yqie.proxyCh <- fmt.Sprintf("%s://%s:%s", typ, ip, port):
 					}
 				}
 			}
-		}()
-
-		go func() {
-			wg.Wait()
-			close(proxyCh)
-		}()
-
-		return proxyCh
+		}
 	}
-	return CrawlerFunc(f)
+
+	return yqie
 }
 
 // ip3366公共代理
@@ -921,58 +897,52 @@ func NewxsdlCrawler(timeout, interval int) *inBaseCrawler {
 }
 
 // 方法SEO代理
-func NewffseoCrawler() CrawlerFunc {
-	f := func() <-chan string {
+func NewffseoCrawler(timeout, interval int) *inBaseCrawler {
+	ffseo := &inBaseCrawler{
+		timeout:  time.Duration(timeout) * time.Second,
+		interval: time.Duration(interval) * time.Second,
+	}
+
+	ffseo.parse = func() {
 		const (
 			startURL = "https://proxy.seofangfa.com/"
 		)
-		proxyCh := make(chan string, 5)
 
-		var wg sync.WaitGroup
+		html, err := soup.Get(startURL)
+		if err != nil {
+			return
+		}
+		doc := soup.HTMLParse(html)
+		if doc.Error != nil {
+			return
+		}
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			html, err := soup.Get(startURL)
-			if err != nil {
-				return
+		table := doc.Find("table", "class", "table")
+		if table.Error != nil {
+			return
+		}
+		tbody := table.Find("tbody")
+		if tbody.Error != nil {
+			return
+		}
+		for _, tr := range tbody.FindAll("tr") {
+			tds := tr.FindAll("td")
+			if len(tds) == 0 {
+				continue
 			}
-			doc := soup.HTMLParse(html)
-			if doc.Error != nil {
-				return
-			}
-
-			table := doc.Find("table", "class", "table")
-			if table.Error != nil {
-				return
-			}
-			tbody := table.Find("tbody")
-			if tbody.Error != nil {
-				return
-			}
-			for _, tr := range tbody.FindAll("tr") {
-				tds := tr.FindAll("td")
-				if len(tds) == 0 {
-					continue
-				}
-				if len(tds) >= 5 {
-					ip := tds[0].Text()
-					port := tds[1].Text()
-					proxyCh <- fmt.Sprintf("%s:%s", ip, port)
+			if len(tds) >= 5 {
+				ip := tds[0].Text()
+				port := tds[1].Text()
+				select {
+				case <-ffseo.abortCh:
+					return
+				case ffseo.proxyCh <- fmt.Sprintf("%s:%s", ip, port):
 				}
 			}
-
-		}()
-
-		go func() {
-			wg.Wait()
-			close(proxyCh)
-		}()
-
-		return proxyCh
+		}
 	}
-	return CrawlerFunc(f)
+
+	return ffseo
 }
 
 //米扑代理
